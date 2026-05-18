@@ -39,3 +39,6 @@ yarn-error.log*
 
 # Local research notes
 pi-mono-tui-agent-notes.md
+
+# Local service state
+.local/
