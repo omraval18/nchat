@@ -1,5 +1,5 @@
 {
-  "name": "nrouter",
+  "name": "nchat",
   "private": true,
   "scripts": {
     "build": "turbo run build",

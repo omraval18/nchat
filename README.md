@@ -1,159 +1,122 @@
-# Turborepo starter
+# nchat
 
-This Turborepo starter is maintained by the Turborepo core team.
+Local-first terminal messaging prototype.
 
-## Using this example
+Current implementation:
 
-Run the following command:
+- `nchat` CLI app with interactive TUI and non-interactive commands.
+- Central transport server backed by Postgres.
+- Local client storage in SQLite on the user's machine.
+- Username/password signup/login with Argon2id password hashing.
+- Per-device identity key generation, stored for future E2EE integration.
+- One-to-one direct messaging through WebSockets.
+- Group creation, owner-only member add, group message relay.
+- Slash-command TUI flow inspired by pi-agent: `/ping`, `/group`, `/grpadd` with dropdown-style suggestions.
 
-```sh
-npx create-turbo@latest
+Messages are stored locally by clients. The transport server stores users, devices, sessions, direct connections, groups, and group membership, but not message history.
+
+## Local Postgres
+
+Docker Compose is provided:
+
+```bash
+docker compose up -d postgres
 ```
 
-## What's inside?
+If Docker is unavailable, run any local Postgres and point `DATABASE_URL` at it.
 
-This Turborepo includes the following packages/apps:
+Default server database URL:
 
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```bash
+postgres://nchat:nchat@localhost:5432/nchat
 ```
 
-Without global `turbo`, use your package manager:
+## Server
 
-```sh
-cd my-turborepo
-npx turbo build
-pnpm dlx turbo build
-pnpm exec turbo build
+```bash
+DATABASE_URL=postgres://nchat:nchat@localhost:5432/nchat \
+NCHAT_JWT_SECRET=replace-with-a-long-random-secret \
+pnpm --filter @nchat/server dev
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+## CLI Auth
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+Use different `NCHAT_HOME` values to simulate multiple local users/devices.
 
-```sh
-turbo build --filter=docs
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev signup alice --password password123 --name Alice
+NCHAT_HOME=.local/bob pnpm --filter nchat dev signup bob --password password123 --name Bob
 ```
 
-Without global `turbo`:
+## Direct Messaging
 
-```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
+Create a connection:
+
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev connect bob
 ```
 
-### Develop
+Send a one-to-one message non-interactively:
 
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev ping bob --message "Hey!"
 ```
 
-Without global `turbo`, use your package manager:
+On success:
 
-```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
+```text
+sent to bob
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+## Groups
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+Create a group:
 
-```sh
-turbo dev --filter=web
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev group-create friends
 ```
 
-Without global `turbo`:
+Add a direct connection to a group you own:
 
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev group-add friends bob
 ```
 
-### Remote Caching
+Send a group message:
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev group-send friends --message "hello group"
 ```
 
-Without global `turbo`, use your package manager:
+## TUI
 
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev tui
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
+Supported slash commands:
 
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
+- `/ping <username>` switches to a direct chat.
+- `/group <name>` switches to a group chat.
+- `/group create <name>` creates a group and switches to it.
+- `/grpadd <username>` adds a direct connection to the active group when the current user owns it.
+- `/help` prints basic help.
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+Autocomplete behavior:
 
-```sh
-turbo link
-```
+- Typing `/ping ` shows direct connections.
+- Typing `/group ` shows groups.
+- Typing `/grpadd ` shows direct connections.
+- `Tab` applies the selected suggestion.
+- Up/down changes the selected suggestion.
 
-Without global `turbo`:
+## E2EE Readiness
 
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
+Encryption is intentionally not implemented yet. The code is structured so E2EE can be added without replacing the transport or TUI:
 
-## Useful Links
+- Users can have multiple devices.
+- Devices register public identity keys at signup/login.
+- Message transport uses a payload envelope currently marked `plaintext.v1`.
+- Local gateway owns encode/send/store boundaries.
 
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+Future E2EE work should replace plaintext payload encoding with encrypted payloads and introduce device key bundles, prekeys, verified devices, and group key management.
