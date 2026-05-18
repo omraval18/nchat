@@ -115,7 +115,7 @@ program
     if (!group) throw new Error(`unknown group ${groupValue}`);
     const status = await gateway.sendGroupMessageAndWait(group.id, options.message);
     gateway.stop();
-    if (status === "failed") {
+    if (status !== "delivered") {
       console.error(`failed to send to group ${group.name}`);
       process.exitCode = 1;
       return;
@@ -132,7 +132,7 @@ program
     await gateway.start();
     const status = await gateway.sendMessageAndWait(username, options.message);
     gateway.stop();
-    if (status === "failed") {
+    if (status !== "delivered") {
       console.error(`failed to send to ${username}`);
       process.exitCode = 1;
       return;

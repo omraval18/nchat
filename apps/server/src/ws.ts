@@ -165,7 +165,12 @@ async function handleSocketMessage(
         delivered += 1;
       }
     }
-    sendAck(client.ws, parsed.data.messageId, delivered > 0 ? "delivered" : "accepted");
+    sendAck(
+      client.ws,
+      parsed.data.messageId,
+      delivered > 0 ? "delivered" : "failed",
+      delivered > 0 ? undefined : "no_online_group_members",
+    );
   }
 }
 
