@@ -1,6 +1,17 @@
 {
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "tui",
+  "globalEnv": [
+    "DATABASE_URL",
+    "HOSTNAME",
+    "NCHAT_ACCESS_TOKEN_TTL_SECONDS",
+    "NCHAT_HOME",
+    "NCHAT_JWT_SECRET",
+    "NCHAT_REFRESH_TOKEN_TTL_DAYS",
+    "NCHAT_SERVER_PORT",
+    "NCHAT_SERVER_URL",
+    "USER"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
