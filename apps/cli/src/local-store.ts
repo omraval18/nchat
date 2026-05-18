@@ -196,8 +196,22 @@ export class LocalStore {
     this.db.prepare(`UPDATE outbox SET status = 'sent' WHERE id = ?`).run(id);
   }
 
+  markOutboxSentByMessage(messageId: string): void {
+    this.db.prepare(`UPDATE outbox SET status = 'sent' WHERE message_id = ?`).run(messageId);
+  }
+
   markOutboxFailed(id: string, retryAt: number): void {
     this.db.prepare(`UPDATE outbox SET status = 'failed', next_attempt_at = ? WHERE id = ?`).run(retryAt, id);
+  }
+
+  markOutboxFailedByMessage(messageId: string, retryAt: number): void {
+    this.db
+      .prepare(`UPDATE outbox SET status = 'failed', next_attempt_at = ? WHERE message_id = ?`)
+      .run(retryAt, messageId);
+  }
+
+  resetSendingOutbox(): void {
+    this.db.prepare(`UPDATE outbox SET status = 'queued' WHERE status = 'sending'`).run();
   }
 
   private migrate(): void {

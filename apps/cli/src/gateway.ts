@@ -31,6 +31,7 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
   private status: GatewayStatus = { websocket: "disconnected" };
   private outboxTimer: NodeJS.Timeout | null = null;
   private pendingAcks = new Map<string, (status: MessageStatus, reason?: string) => void>();
+  private stopped = true;
 
   constructor(
     private readonly config: ClientConfig,
@@ -146,12 +147,15 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
   }
 
   async start(): Promise<void> {
+    this.stopped = false;
+    this.store.resetSendingOutbox();
     await this.refreshConnections();
     await this.connectWebSocket();
     this.outboxTimer = setInterval(() => void this.flushOutbox(), 2_000);
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.outboxTimer) clearInterval(this.outboxTimer);
     this.outboxTimer = null;
     this.ws?.close();
@@ -183,7 +187,9 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     ws.on("close", () => {
       if (this.ws === ws) this.ws = null;
       this.setStatus({ websocket: "disconnected", activePeer: this.status.activePeer });
-      setTimeout(() => void this.connectWebSocket().catch((error) => this.recordError(error)), 2_000);
+      if (!this.stopped) {
+        setTimeout(() => void this.connectWebSocket().catch((error) => this.recordError(error)), 2_000);
+      }
     });
 
     ws.on("error", (error) => this.recordError(error));
@@ -203,7 +209,6 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
       };
       this.ws.send(JSON.stringify(event));
       this.store.updateMessageStatus(item.messageId, "sent");
-      this.store.markOutboxSent(item.id);
     }
   }
 
@@ -236,6 +241,11 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     if (parsed.data.type === "message.ack") {
       const status: MessageStatus = parsed.data.status === "failed" ? "failed" : "delivered";
       this.store.updateMessageStatus(parsed.data.messageId, status);
+      if (status === "delivered") {
+        this.store.markOutboxSentByMessage(parsed.data.messageId);
+      } else {
+        this.store.markOutboxFailedByMessage(parsed.data.messageId, Date.now() + 10_000);
+      }
       this.pendingAcks.get(parsed.data.messageId)?.(status, parsed.data.reason);
       this.pendingAcks.delete(parsed.data.messageId);
       this.emit("status", this.status);
