@@ -1,12 +1,14 @@
 import readline from "node:readline";
-import type { Connection } from "@nchat/protocol";
-import type { ClientGateway, GatewayStatus } from "./gateway.js";
+import type { Connection, Group } from "@nchat/protocol";
+import { groupConversationKey, type ClientGateway, type GatewayStatus } from "./gateway.js";
 import type { LocalMessage } from "./local-store.js";
 
 export class NchatTui {
   private input = "";
   private activePeer: string | undefined;
+  private activeGroup: Group | undefined;
   private connections: Connection[] = [];
+  private groups: Group[] = [];
   private messages: LocalMessage[] = [];
   private status: GatewayStatus = { websocket: "disconnected" };
   private selectedSuggestion = 0;
@@ -15,13 +17,19 @@ export class NchatTui {
 
   async run(): Promise<void> {
     this.connections = await this.gateway.refreshConnections();
+    this.groups = await this.gateway.refreshGroups();
     this.activePeer = this.connections[0]?.username;
     this.gateway.setActivePeer(this.activePeer);
     this.messages = this.activePeer ? this.gateway.getMessages(this.activePeer) : [];
 
     this.gateway.on("message", (message) => {
-      if (message.peerUsername === this.activePeer) {
-        this.messages = this.gateway.getMessages(this.activePeer);
+      const activeKey = this.activeGroup ? groupConversationKey(this.activeGroup.id) : this.activePeer;
+      if (message.peerUsername === activeKey) {
+        this.messages = this.activeGroup
+          ? this.gateway.getGroupMessages(this.activeGroup.id)
+          : this.activePeer
+            ? this.gateway.getMessages(this.activePeer)
+            : [];
       }
       this.render();
     });
@@ -31,6 +39,10 @@ export class NchatTui {
     });
     this.gateway.on("status", (status) => {
       this.status = status;
+      this.render();
+    });
+    this.gateway.on("groups", (groups) => {
+      this.groups = groups;
       this.render();
     });
 
@@ -95,6 +107,39 @@ export class NchatTui {
       return;
     }
 
+    if (value.startsWith("/group create ")) {
+      const name = value.slice("/group create ".length).trim();
+      if (name) {
+        const group = await this.gateway.createGroup(name);
+        await this.switchGroup(group.name);
+        this.messages = [
+          ...this.messages,
+          systemMessage(`Created group ${group.name}. Use /grpadd <username> to add direct connections.`),
+        ];
+      }
+      this.render();
+      return;
+    }
+
+    if (value.startsWith("/group")) {
+      const [, groupName] = value.split(/\s+/, 2);
+      if (groupName) await this.switchGroup(groupName);
+      this.render();
+      return;
+    }
+
+    if (value.startsWith("/grpadd")) {
+      const [, username] = value.split(/\s+/, 2);
+      if (!this.activeGroup) {
+        this.messages = [...this.messages, systemMessage("Switch to a group before using /grpadd.")];
+      } else if (username) {
+        await this.gateway.addGroupMember(this.activeGroup.id, username);
+        this.messages = [...this.messages, systemMessage(`Added ${username} to ${this.activeGroup.name}.`)];
+      }
+      this.render();
+      return;
+    }
+
     if (value === "/help") {
       this.messages = [
         ...this.messages,
@@ -104,14 +149,19 @@ export class NchatTui {
       return;
     }
 
-    if (!this.activePeer) {
-      this.messages = [...this.messages, systemMessage("No active chat. Use /ping <username> first.")];
+    if (!this.activePeer && !this.activeGroup) {
+      this.messages = [...this.messages, systemMessage("No active chat. Use /ping <username> or /group <name> first.")];
       this.render();
       return;
     }
 
-    await this.gateway.sendMessage(this.activePeer, value);
-    this.messages = this.gateway.getMessages(this.activePeer);
+    if (this.activeGroup) {
+      await this.gateway.sendGroupMessage(this.activeGroup.id, value);
+      this.messages = this.gateway.getGroupMessages(this.activeGroup.id);
+    } else if (this.activePeer) {
+      await this.gateway.sendMessage(this.activePeer, value);
+      this.messages = this.gateway.getMessages(this.activePeer);
+    }
     this.render();
   }
 
@@ -122,15 +172,32 @@ export class NchatTui {
       return;
     }
     this.activePeer = username;
+    this.activeGroup = undefined;
     this.gateway.setActivePeer(username);
     this.messages = this.gateway.getMessages(username);
+  }
+
+  private async switchGroup(value: string): Promise<void> {
+    const group = this.groups.find(
+      (item) => item.id === value || item.name.toLowerCase() === value.toLowerCase(),
+    );
+    if (!group) {
+      this.messages = [...this.messages, systemMessage(`No group named ${value}.`)];
+      return;
+    }
+    this.activeGroup = group;
+    this.activePeer = undefined;
+    this.gateway.setActivePeer(`#${group.name}`);
+    this.messages = this.gateway.getGroupMessages(group.id);
   }
 
   private applySuggestion(): void {
     const suggestions = this.suggestions();
     const selected = suggestions[this.selectedSuggestion];
     if (!selected) return;
-    this.input = `/ping ${selected.username}`;
+    if (this.input.startsWith("/group")) this.input = `/group ${selected.label}`;
+    else if (this.input.startsWith("/grpadd")) this.input = `/grpadd ${selected.label}`;
+    else this.input = `/ping ${selected.label}`;
     this.render();
   }
 
@@ -141,12 +208,30 @@ export class NchatTui {
     this.render();
   }
 
-  private suggestions(): Connection[] {
+  private suggestions(): Array<{ label: string; description: string; online?: boolean }> {
+    if (this.input.startsWith("/group")) {
+      const rest = this.input.slice("/group".length).trimStart().toLowerCase();
+      if ("create".startsWith(rest) || rest.startsWith("create")) {
+        return [{ label: "create", description: "create a group" }];
+      }
+      return this.groups
+        .filter((group) => group.name.toLowerCase().includes(rest) || group.id === rest)
+        .slice(0, 8)
+        .map((group) => ({ label: group.name, description: `${group.memberCount} members` }));
+    }
+    if (this.input.startsWith("/grpadd")) {
+      const rest = this.input.slice("/grpadd".length).trimStart().toLowerCase();
+      return this.connections
+        .filter((connection) => connection.username.toLowerCase().includes(rest) || connection.displayName.toLowerCase().includes(rest))
+        .slice(0, 8)
+        .map((connection) => ({ label: connection.username, description: connection.displayName, online: connection.online }));
+    }
     if (!this.input.startsWith("/ping")) return [];
     const rest = this.input.slice("/ping".length).trimStart().toLowerCase();
     return this.connections
       .filter((connection) => connection.username.toLowerCase().includes(rest) || connection.displayName.toLowerCase().includes(rest))
-      .slice(0, 8);
+      .slice(0, 8)
+      .map((connection) => ({ label: connection.username, description: connection.displayName, online: connection.online }));
   }
 
   private render(): void {
@@ -158,7 +243,12 @@ export class NchatTui {
 
     process.stdout.write("\x1b[2J\x1b[H");
     writeLine(boxLine(width));
-    writeLine(pad(` nchat ${this.status.websocket} ${this.activePeer ? `| direct: ${this.activePeer}` : "| no chat selected"}`, width));
+    const activeLabel = this.activeGroup
+      ? `| group: ${this.activeGroup.name}`
+      : this.activePeer
+        ? `| direct: ${this.activePeer}`
+        : "| no chat selected";
+    writeLine(pad(` nchat ${this.status.websocket} ${activeLabel}`, width));
     writeLine(boxLine(width));
 
     for (const message of visibleMessages) {
@@ -175,10 +265,10 @@ export class NchatTui {
     writeLine(pad(` > ${this.input}`, width));
     for (const [index, suggestion] of suggestions.entries()) {
       const marker = index === this.selectedSuggestion ? ">" : " ";
-      const online = suggestion.online ? "online" : "offline";
-      writeLine(pad(` ${marker} ${suggestion.username.padEnd(18)} ${suggestion.displayName.padEnd(28)} ${online}`, width));
+      const online = suggestion.online === undefined ? "" : suggestion.online ? "online" : "offline";
+      writeLine(pad(` ${marker} ${suggestion.label.padEnd(18)} ${suggestion.description.padEnd(28)} ${online}`, width));
     }
-    writeLine(pad(" /ping <username> switches chat | /help | Tab completes | Ctrl-C exits", width));
+    writeLine(pad(" /ping <user> | /group <name> | /group create <name> | /grpadd <user> | Ctrl-C exits", width));
   }
 
   private close(): void {

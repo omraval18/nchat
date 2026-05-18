@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AuthResponse, Connection, MessageStatus } from "@nchat/protocol";
+import type { AuthResponse, Connection, Group, MessageStatus } from "@nchat/protocol";
 
 export type LocalAccount = {
   userId: string;
@@ -35,6 +35,8 @@ export type OutboxItem = {
   attempts: number;
   nextAttemptAt: number;
 };
+
+export type LocalGroup = Group;
 
 export class LocalStore {
   private readonly db: DatabaseSync;
@@ -124,6 +126,34 @@ export class LocalStore {
       displayName: row.display_name,
       online: row.online === 1,
     }));
+  }
+
+  upsertGroups(groups: Group[]): void {
+    const statement = this.db.prepare(
+      `INSERT INTO groups (id, name, owner_user_id, member_count, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         owner_user_id = excluded.owner_user_id,
+         member_count = excluded.member_count,
+         updated_at = excluded.updated_at`,
+    );
+    const now = Date.now();
+    for (const group of groups) {
+      statement.run(group.id, group.name, group.ownerUserId, group.memberCount, now);
+    }
+  }
+
+  listGroups(): LocalGroup[] {
+    const rows = this.db.prepare(`SELECT * FROM groups ORDER BY name ASC`).all() as GroupRow[];
+    return rows.map(rowToGroup);
+  }
+
+  getGroupByIdOrName(value: string): LocalGroup | null {
+    const row = this.db
+      .prepare(`SELECT * FROM groups WHERE id = ? OR lower(name) = lower(?) ORDER BY name ASC LIMIT 1`)
+      .get(value, value) as GroupRow | undefined;
+    return row ? rowToGroup(row) : null;
   }
 
   setConnectionPresence(username: string, online: boolean): void {
@@ -237,6 +267,14 @@ export class LocalStore {
         updated_at integer NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS groups (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        owner_user_id text NOT NULL,
+        member_count integer NOT NULL,
+        updated_at integer NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS messages (
         id text PRIMARY KEY,
         conversation_id text NOT NULL,
@@ -306,6 +344,13 @@ type OutboxRow = {
   next_attempt_at: number;
 };
 
+type GroupRow = {
+  id: string;
+  name: string;
+  owner_user_id: string;
+  member_count: number;
+};
+
 function rowToMessage(row: MessageRow): LocalMessage {
   return {
     id: row.id,
@@ -329,5 +374,14 @@ function rowToOutbox(row: OutboxRow): OutboxItem {
     status: row.status,
     attempts: row.attempts,
     nextAttemptAt: row.next_attempt_at,
+  };
+}
+
+function rowToGroup(row: GroupRow): LocalGroup {
+  return {
+    id: row.id,
+    name: row.name,
+    ownerUserId: row.owner_user_id,
+    memberCount: row.member_count,
   };
 }

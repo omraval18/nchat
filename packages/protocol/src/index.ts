@@ -47,6 +47,13 @@ export const connectionSchema = z.object({
   online: z.boolean(),
 });
 
+export const groupSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(80),
+  ownerUserId: z.string().uuid(),
+  memberCount: z.number().int().nonnegative(),
+});
+
 export const directMessagePayloadSchema = z.object({
   kind: z.literal("plaintext.v1"),
   body: messageBodySchema,
@@ -60,9 +67,28 @@ export const clientMessageSendSchema = z.object({
   createdAt: z.number().int().positive(),
 });
 
+export const clientGroupMessageSendSchema = z.object({
+  type: z.literal("group.message.send"),
+  messageId: z.string().uuid(),
+  groupId: z.string().uuid(),
+  payload: directMessagePayloadSchema,
+  createdAt: z.number().int().positive(),
+});
+
 export const serverMessageIncomingSchema = z.object({
   type: z.literal("message.incoming"),
   messageId: z.string().uuid(),
+  fromUsername: usernameSchema,
+  fromUserId: z.string().uuid(),
+  payload: directMessagePayloadSchema,
+  createdAt: z.number().int().positive(),
+});
+
+export const serverGroupMessageIncomingSchema = z.object({
+  type: z.literal("group.message.incoming"),
+  messageId: z.string().uuid(),
+  groupId: z.string().uuid(),
+  groupName: z.string().min(1).max(80),
   fromUsername: usernameSchema,
   fromUserId: z.string().uuid(),
   payload: directMessagePayloadSchema,
@@ -88,9 +114,13 @@ export const serverErrorSchema = z.object({
   message: z.string(),
 });
 
-export const clientWsEventSchema = z.discriminatedUnion("type", [clientMessageSendSchema]);
+export const clientWsEventSchema = z.discriminatedUnion("type", [
+  clientMessageSendSchema,
+  clientGroupMessageSendSchema,
+]);
 export const serverWsEventSchema = z.discriminatedUnion("type", [
   serverMessageIncomingSchema,
+  serverGroupMessageIncomingSchema,
   serverMessageAckSchema,
   serverPresenceSchema,
   serverErrorSchema,
@@ -100,6 +130,7 @@ export type SignupRequest = z.infer<typeof signupRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type AuthResponse = z.infer<typeof authResponseSchema>;
 export type Connection = z.infer<typeof connectionSchema>;
+export type Group = z.infer<typeof groupSchema>;
 export type DirectMessagePayload = z.infer<typeof directMessagePayloadSchema>;
 export type ClientWsEvent = z.infer<typeof clientWsEventSchema>;
 export type ServerWsEvent = z.infer<typeof serverWsEventSchema>;

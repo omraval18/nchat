@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import {
   clientWsEventSchema,
+  serverGroupMessageIncomingSchema,
   serverMessageAckSchema,
   serverMessageIncomingSchema,
   type ServerWsEvent,
@@ -124,6 +125,47 @@ async function handleSocketMessage(
       send(recipientClient.ws, incoming);
     }
     sendAck(client.ws, parsed.data.messageId, "delivered");
+    return;
+  }
+
+  if (parsed.data.type === "group.message.send") {
+    const group = await db.query(
+      `SELECT g.id, g.name
+       FROM groups g
+       JOIN group_members gm ON gm.group_id = g.id
+       WHERE g.id = $1 AND gm.user_id = $2`,
+      [parsed.data.groupId, client.session.userId],
+    );
+    if (group.rowCount === 0) {
+      sendAck(client.ws, parsed.data.messageId, "failed", "not_group_member");
+      return;
+    }
+
+    const members = await db.query(
+      `SELECT user_id FROM group_members WHERE group_id = $1 AND user_id <> $2`,
+      [parsed.data.groupId, client.session.userId],
+    );
+    const incoming = serverGroupMessageIncomingSchema.parse({
+      type: "group.message.incoming",
+      messageId: parsed.data.messageId,
+      groupId: parsed.data.groupId,
+      groupName: group.rows[0].name,
+      fromUsername: client.session.username,
+      fromUserId: client.session.userId,
+      payload: parsed.data.payload,
+      createdAt: parsed.data.createdAt,
+    });
+
+    let delivered = 0;
+    for (const member of members.rows) {
+      const recipientSockets = socketsByUserId.get(member.user_id as string);
+      if (!recipientSockets) continue;
+      for (const recipientClient of recipientSockets) {
+        send(recipientClient.ws, incoming);
+        delivered += 1;
+      }
+    }
+    sendAck(client.ws, parsed.data.messageId, delivered > 0 ? "delivered" : "accepted");
   }
 }
 

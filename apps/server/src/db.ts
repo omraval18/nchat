@@ -47,5 +47,23 @@ export async function migrate(db: Db): Promise<void> {
     CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS connections_low_idx ON direct_connections(user_low);
     CREATE INDEX IF NOT EXISTS connections_high_idx ON direct_connections(user_high);
+
+    CREATE TABLE IF NOT EXISTS groups (
+      id uuid PRIMARY KEY,
+      name text NOT NULL,
+      owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role text NOT NULL CHECK (role IN ('owner', 'member')),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (group_id, user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS group_members_user_id_idx ON group_members(user_id);
+    CREATE INDEX IF NOT EXISTS groups_owner_user_id_idx ON groups(owner_user_id);
   `);
 }

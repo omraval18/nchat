@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   authResponseSchema,
   connectionSchema,
+  groupSchema,
   loginRequestSchema,
   signupRequestSchema,
   usernameSchema,
@@ -105,6 +106,104 @@ export async function handleHttp(
          VALUES ($1, $2)
          ON CONFLICT DO NOTHING`,
         [userLow, userHigh],
+      );
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/groups") {
+      const session = await requireAuth(req, context.config);
+      const rows = await context.db.query(
+        `SELECT g.id, g.name, g.owner_user_id, count(gm_all.user_id)::int as member_count
+         FROM group_members gm
+         JOIN groups g ON g.id = gm.group_id
+         JOIN group_members gm_all ON gm_all.group_id = g.id
+         WHERE gm.user_id = $1
+         GROUP BY g.id
+         ORDER BY g.name ASC`,
+        [session.userId],
+      );
+      sendJson(res, 200, {
+        groups: rows.rows.map((row) =>
+          groupSchema.parse({
+            id: row.id,
+            name: row.name,
+            ownerUserId: row.owner_user_id,
+            memberCount: row.member_count,
+          }),
+        ),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/groups") {
+      const session = await requireAuth(req, context.config);
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (name.length === 0 || name.length > 80) {
+        sendJson(res, 400, { error: "invalid_group_name" });
+        return;
+      }
+      const groupId = randomUUID();
+      await context.db.query("BEGIN");
+      try {
+        await context.db.query(`INSERT INTO groups (id, name, owner_user_id) VALUES ($1, $2, $3)`, [
+          groupId,
+          name,
+          session.userId,
+        ]);
+        await context.db.query(
+          `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')`,
+          [groupId, session.userId],
+        );
+        await context.db.query("COMMIT");
+      } catch (error) {
+        await context.db.query("ROLLBACK");
+        throw error;
+      }
+      sendJson(
+        res,
+        201,
+        groupSchema.parse({ id: groupId, name, ownerUserId: session.userId, memberCount: 1 }),
+      );
+      return;
+    }
+
+    const groupMemberMatch = url.pathname.match(/^\/groups\/([^/]+)\/members$/);
+    if (req.method === "POST" && groupMemberMatch) {
+      const session = await requireAuth(req, context.config);
+      const groupId = groupMemberMatch[1];
+      const body = await readJson(req);
+      const username = usernameSchema.parse(body.username);
+      const group = await context.db.query(`SELECT owner_user_id FROM groups WHERE id = $1`, [groupId]);
+      if (group.rowCount === 0) {
+        sendJson(res, 404, { error: "group_not_found" });
+        return;
+      }
+      if (group.rows[0].owner_user_id !== session.userId) {
+        sendJson(res, 403, { error: "group_owner_required" });
+        return;
+      }
+      const target = await context.db.query(`SELECT id FROM users WHERE username = $1`, [username]);
+      if (target.rowCount === 0) {
+        sendJson(res, 404, { error: "user_not_found" });
+        return;
+      }
+      const targetId = target.rows[0].id as string;
+      const [userLow, userHigh] = [session.userId, targetId].sort();
+      const connection = await context.db.query(
+        `SELECT 1 FROM direct_connections WHERE user_low = $1 AND user_high = $2`,
+        [userLow, userHigh],
+      );
+      if (connection.rowCount === 0 && targetId !== session.userId) {
+        sendJson(res, 403, { error: "not_connected" });
+        return;
+      }
+      await context.db.query(
+        `INSERT INTO group_members (group_id, user_id, role)
+         VALUES ($1, $2, 'member')
+         ON CONFLICT DO NOTHING`,
+        [groupId, targetId],
       );
       sendJson(res, 200, { ok: true });
       return;

@@ -67,6 +67,58 @@ program
   });
 
 program
+  .command("groups")
+  .description("list groups")
+  .action(async () => {
+    const groups = await gateway.refreshGroups();
+    if (groups.length === 0) {
+      console.log("no groups yet");
+      return;
+    }
+    for (const group of groups) {
+      console.log(`${group.name}\t${group.id}\t${group.memberCount} members`);
+    }
+  });
+
+program
+  .command("group-create")
+  .argument("<name>")
+  .description("create a group")
+  .action(async (name: string) => {
+    const group = await gateway.createGroup(name);
+    console.log(`created group ${group.name} (${group.id})`);
+    console.log(`use /grpadd <username> in the TUI or nchat group-add ${group.id} <username>`);
+  });
+
+program
+  .command("group-add")
+  .argument("<group>")
+  .argument("<username>")
+  .description("add a direct connection to a group you own")
+  .action(async (groupValue: string, username: string) => {
+    const groups = await gateway.refreshGroups();
+    const group = groups.find((item) => item.id === groupValue || item.name.toLowerCase() === groupValue.toLowerCase());
+    if (!group) throw new Error(`unknown group ${groupValue}`);
+    await gateway.addGroupMember(group.id, username);
+    console.log(`added ${username} to ${group.name}`);
+  });
+
+program
+  .command("group-send")
+  .argument("<group>")
+  .requiredOption("--message <message>")
+  .description("send a text message to a group")
+  .action(async (groupValue: string, options: { message: string }) => {
+    await gateway.start();
+    const groups = gateway.listCachedGroups();
+    const group = groups.find((item) => item.id === groupValue || item.name.toLowerCase() === groupValue.toLowerCase());
+    if (!group) throw new Error(`unknown group ${groupValue}`);
+    await gateway.sendGroupMessage(group.id, options.message);
+    gateway.stop();
+    console.log(`sent to group ${group.name}`);
+  });
+
+program
   .command("ping")
   .argument("<username>")
   .requiredOption("--message <message>")

@@ -1,8 +1,10 @@
 import {
   authResponseSchema,
   connectionSchema,
+  groupSchema,
   type AuthResponse,
   type Connection,
+  type Group,
   type LoginRequest,
   type SignupRequest,
 } from "@nchat/protocol";
@@ -29,6 +31,19 @@ export class ApiClient {
   async listConnections(accessToken: string): Promise<Connection[]> {
     const result = (await this.get("/connections", accessToken)) as { connections: unknown[] };
     return result.connections.map((connection) => connectionSchema.parse(connection));
+  }
+
+  async createGroup(name: string, accessToken: string): Promise<Group> {
+    return groupSchema.parse(await this.post("/groups", { name }, accessToken));
+  }
+
+  async listGroups(accessToken: string): Promise<Group[]> {
+    const result = (await this.get("/groups", accessToken)) as { groups: unknown[] };
+    return result.groups.map((group) => groupSchema.parse(group));
+  }
+
+  async addGroupMember(groupId: string, username: string, accessToken: string): Promise<void> {
+    await this.post(`/groups/${groupId}/members`, { username }, accessToken);
   }
 
   private async get(path: string, accessToken?: string): Promise<unknown> {

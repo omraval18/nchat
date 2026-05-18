@@ -5,6 +5,7 @@ import {
   encodePlaintextPayload,
   serverWsEventSchema,
   type Connection,
+  type Group,
   type MessageStatus,
 } from "@nchat/protocol";
 import WebSocket from "ws";
@@ -17,6 +18,7 @@ export type GatewayEvents = {
   message: [LocalMessage];
   status: [GatewayStatus];
   connections: [Connection[]];
+  groups: [Group[]];
 };
 
 export type GatewayStatus = {
@@ -83,6 +85,31 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     return connections;
   }
 
+  async refreshGroups(): Promise<Group[]> {
+    const account = await this.accountWithFreshToken();
+    const groups = await this.api.listGroups(account.accessToken);
+    this.store.upsertGroups(groups);
+    this.emit("groups", groups);
+    return groups;
+  }
+
+  listCachedGroups(): Group[] {
+    return this.store.listGroups();
+  }
+
+  async createGroup(name: string): Promise<Group> {
+    const account = await this.accountWithFreshToken();
+    const group = await this.api.createGroup(name, account.accessToken);
+    await this.refreshGroups();
+    return group;
+  }
+
+  async addGroupMember(groupId: string, username: string): Promise<void> {
+    const account = await this.accountWithFreshToken();
+    await this.api.addGroupMember(groupId, username, account.accessToken);
+    await this.refreshGroups();
+  }
+
   listCachedConnections(): Connection[] {
     return this.store.listConnections();
   }
@@ -95,6 +122,10 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
 
   getMessages(peerUsername: string): LocalMessage[] {
     return this.store.listMessages(peerUsername);
+  }
+
+  getGroupMessages(groupId: string): LocalMessage[] {
+    return this.store.listMessages(groupConversationKey(groupId));
   }
 
   async sendMessage(peerUsername: string, body: string): Promise<LocalMessage> {
@@ -131,6 +162,40 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     return message;
   }
 
+  async sendGroupMessage(groupId: string, body: string): Promise<LocalMessage> {
+    const account = this.requireAccount();
+    const group = this.store.getGroupByIdOrName(groupId) ?? (await this.refreshGroups()).find((item) => item.id === groupId);
+    if (!group) {
+      throw new Error(`unknown group ${groupId}`);
+    }
+
+    const createdAt = Date.now();
+    const message: LocalMessage = {
+      id: randomUUID(),
+      conversationId: group.id,
+      peerUsername: groupConversationKey(group.id),
+      senderUsername: account.username,
+      body,
+      direction: "outgoing",
+      status: "pending",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.store.insertMessage(message);
+    this.store.enqueue({
+      id: randomUUID(),
+      messageId: message.id,
+      toUsername: groupConversationKey(group.id),
+      payload: JSON.stringify(encodePlaintextPayload(body)),
+      status: "queued",
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+    });
+    this.emit("message", message);
+    void this.flushOutbox();
+    return message;
+  }
+
   async sendMessageAndWait(peerUsername: string, body: string, timeoutMs = 8_000): Promise<MessageStatus> {
     const message = await this.sendMessage(peerUsername, body);
     if (message.status !== "pending") return message.status;
@@ -150,6 +215,7 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     this.stopped = false;
     this.store.resetSendingOutbox();
     await this.refreshConnections();
+    await this.refreshGroups();
     await this.connectWebSocket();
     this.outboxTimer = setInterval(() => void this.flushOutbox(), 2_000);
   }
@@ -201,9 +267,11 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     while ((item = this.store.nextOutboxItem())) {
       this.store.markOutboxSending(item.id);
       const event = {
-        type: "message.send" as const,
+        type: item.toUsername.startsWith("group:") ? ("group.message.send" as const) : ("message.send" as const),
         messageId: item.messageId,
-        toUsername: item.toUsername,
+        ...(item.toUsername.startsWith("group:")
+          ? { groupId: item.toUsername.slice("group:".length) }
+          : { toUsername: item.toUsername }),
         payload: JSON.parse(item.payload) as unknown,
         createdAt: Date.now(),
       };
@@ -216,6 +284,23 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     const parsed = serverWsEventSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) {
       this.recordError(new Error(parsed.error.message));
+      return;
+    }
+
+    if (parsed.data.type === "group.message.incoming") {
+      const message: LocalMessage = {
+        id: parsed.data.messageId,
+        conversationId: parsed.data.groupId,
+        peerUsername: groupConversationKey(parsed.data.groupId),
+        senderUsername: parsed.data.fromUsername,
+        body: parsed.data.payload.body,
+        direction: "incoming",
+        status: "delivered",
+        createdAt: parsed.data.createdAt,
+        updatedAt: Date.now(),
+      };
+      this.store.insertMessage(message);
+      this.emit("message", message);
       return;
     }
 
@@ -283,4 +368,8 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     const message = error instanceof Error ? error.message : String(error);
     this.setStatus({ ...this.status, lastError: message });
   }
+}
+
+export function groupConversationKey(groupId: string): string {
+  return `group:${groupId}`;
 }
