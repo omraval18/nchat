@@ -113,8 +113,13 @@ program
     const groups = gateway.listCachedGroups();
     const group = groups.find((item) => item.id === groupValue || item.name.toLowerCase() === groupValue.toLowerCase());
     if (!group) throw new Error(`unknown group ${groupValue}`);
-    await gateway.sendGroupMessage(group.id, options.message);
+    const status = await gateway.sendGroupMessageAndWait(group.id, options.message);
     gateway.stop();
+    if (status === "failed") {
+      console.error(`failed to send to group ${group.name}`);
+      process.exitCode = 1;
+      return;
+    }
     console.log(`sent to group ${group.name}`);
   });
 

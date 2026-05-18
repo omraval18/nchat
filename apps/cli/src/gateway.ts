@@ -211,6 +211,20 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     });
   }
 
+  async sendGroupMessageAndWait(groupId: string, body: string, timeoutMs = 8_000): Promise<MessageStatus> {
+    const message = await this.sendGroupMessage(groupId, body);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingAcks.delete(message.id);
+        resolve("pending");
+      }, timeoutMs);
+      this.pendingAcks.set(message.id, (status) => {
+        clearTimeout(timer);
+        resolve(status);
+      });
+    });
+  }
+
   async start(): Promise<void> {
     this.stopped = false;
     this.store.resetSendingOutbox();
