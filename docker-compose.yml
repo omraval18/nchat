@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nchat-postgres
+    environment:
+      POSTGRES_USER: nchat
+      POSTGRES_PASSWORD: nchat
+      POSTGRES_DB: nchat
+    ports:
+      - "5432:5432"
+    volumes:
+      - nchat-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nchat -d nchat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  nchat-postgres:
