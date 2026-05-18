@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import {
   clientWsEventSchema,
   serverMessageAckSchema,
@@ -19,7 +20,7 @@ type ClientSocket = {
 
 export type RealtimeHub = {
   onlineUsers: ReadonlySet<string>;
-  handleUpgrade(req: IncomingMessage, socket: import("node:net").Socket, head: Buffer): void;
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
 };
 
 export function createRealtimeHub(db: Db, config: ServerConfig): RealtimeHub {

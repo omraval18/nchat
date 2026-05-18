@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { Algorithm, hash, verify } from "@node-rs/argon2";
+import { hash, verify } from "@node-rs/argon2";
 import { jwtVerify, SignJWT } from "jose";
 import type { Db } from "./db.js";
 import type { ServerConfig } from "./config.js";
@@ -19,7 +19,7 @@ type TokenPayload = {
 };
 
 export async function hashPassword(password: string): Promise<string> {
-  return hash(password, { algorithm: Algorithm.Argon2id });
+  return hash(password);
 }
 
 export async function verifyPassword(passwordHash: string, password: string): Promise<boolean> {
