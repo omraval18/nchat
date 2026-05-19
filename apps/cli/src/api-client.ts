@@ -1,9 +1,11 @@
 import {
   authResponseSchema,
   connectionSchema,
+  deviceKeyBundleSchema,
   groupSchema,
   type AuthResponse,
   type Connection,
+  type DeviceKeyBundle,
   type Group,
   type LoginRequest,
   type SignupRequest,
@@ -31,6 +33,13 @@ export class ApiClient {
   async listConnections(accessToken: string): Promise<Connection[]> {
     const result = (await this.get("/connections", accessToken)) as { connections: unknown[] };
     return result.connections.map((connection) => connectionSchema.parse(connection));
+  }
+
+  async listUserDevices(username: string, accessToken: string): Promise<DeviceKeyBundle[]> {
+    const result = (await this.get(`/users/${encodeURIComponent(username)}/devices`, accessToken)) as {
+      devices: unknown[];
+    };
+    return result.devices.map((device) => deviceKeyBundleSchema.parse(device));
   }
 
   async createGroup(name: string, accessToken: string): Promise<Group> {

@@ -54,10 +54,36 @@ export const groupSchema = z.object({
   memberCount: z.number().int().nonnegative(),
 });
 
-export const directMessagePayloadSchema = z.object({
+export const deviceKeyBundleSchema = z.object({
+  deviceId: z.string().uuid(),
+  deviceName: z.string().min(1).max(80),
+  publicIdentityKey: publicKeySchema,
+  lastSeenAt: z.string().nullable(),
+});
+
+export const plaintextPayloadSchema = z.object({
   kind: z.literal("plaintext.v1"),
   body: messageBodySchema,
 });
+
+export const encryptedDirectPayloadSchema = z.object({
+  kind: z.literal("direct.e2ee.v1"),
+  senderDeviceId: z.string().uuid(),
+  senderPublicIdentityKey: publicKeySchema,
+  recipients: z.array(
+    z.object({
+      deviceId: z.string().uuid(),
+      nonce: z.string().min(1),
+      ciphertext: z.string().min(1),
+      tag: z.string().min(1),
+    }),
+  ),
+});
+
+export const directMessagePayloadSchema = z.discriminatedUnion("kind", [
+  plaintextPayloadSchema,
+  encryptedDirectPayloadSchema,
+]);
 
 export const clientMessageSendSchema = z.object({
   type: z.literal("message.send"),
@@ -131,7 +157,10 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type AuthResponse = z.infer<typeof authResponseSchema>;
 export type Connection = z.infer<typeof connectionSchema>;
 export type Group = z.infer<typeof groupSchema>;
+export type DeviceKeyBundle = z.infer<typeof deviceKeyBundleSchema>;
 export type DirectMessagePayload = z.infer<typeof directMessagePayloadSchema>;
+export type PlaintextPayload = z.infer<typeof plaintextPayloadSchema>;
+export type EncryptedDirectPayload = z.infer<typeof encryptedDirectPayloadSchema>;
 export type ClientWsEvent = z.infer<typeof clientWsEventSchema>;
 export type ServerWsEvent = z.infer<typeof serverWsEventSchema>;
 

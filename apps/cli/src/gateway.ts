@@ -5,6 +5,7 @@ import {
   encodePlaintextPayload,
   serverWsEventSchema,
   type Connection,
+  type DirectMessagePayload,
   type Group,
   type MessageStatus,
 } from "@nchat/protocol";
@@ -12,6 +13,7 @@ import WebSocket from "ws";
 import { ApiClient } from "./api-client.js";
 import type { ClientConfig } from "./config.js";
 import { createDeviceKeys } from "./device-keys.js";
+import { decryptDirectPayload, encryptDirectPayload } from "./e2ee.js";
 import { LocalStore, type LocalAccount, type LocalMessage, type OutboxItem } from "./local-store.js";
 
 export type GatewayEvents = {
@@ -136,8 +138,9 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     }
 
     const createdAt = Date.now();
+    const messageId = randomUUID();
     const message: LocalMessage = {
-      id: randomUUID(),
+      id: messageId,
       conversationId: directConversationId(account.userId, connection.userId),
       peerUsername,
       senderUsername: account.username,
@@ -147,12 +150,19 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
       createdAt,
       updatedAt: createdAt,
     };
+    const recipientDevices = await this.api.listUserDevices(peerUsername, account.accessToken);
+    const payload = encryptDirectPayload({
+      account,
+      messageId,
+      recipientDevices,
+      body,
+    });
     this.store.insertMessage(message);
     this.store.enqueue({
       id: randomUUID(),
       messageId: message.id,
       toUsername: peerUsername,
-      payload: JSON.stringify(encodePlaintextPayload(body)),
+      payload: JSON.stringify(payload),
       status: "queued",
       attempts: 0,
       nextAttemptAt: Date.now(),
@@ -286,7 +296,7 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
         ...(item.toUsername.startsWith("group:")
           ? { groupId: item.toUsername.slice("group:".length) }
           : { toUsername: item.toUsername }),
-        payload: JSON.parse(item.payload) as unknown,
+        payload: JSON.parse(item.payload) as DirectMessagePayload,
         createdAt: Date.now(),
       };
       this.ws.send(JSON.stringify(event));
@@ -302,12 +312,16 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     }
 
     if (parsed.data.type === "group.message.incoming") {
+      const body =
+        parsed.data.payload.kind === "plaintext.v1"
+          ? parsed.data.payload.body
+          : "[encrypted group payload is not supported by this client]";
       const message: LocalMessage = {
         id: parsed.data.messageId,
         conversationId: parsed.data.groupId,
         peerUsername: groupConversationKey(parsed.data.groupId),
         senderUsername: parsed.data.fromUsername,
-        body: parsed.data.payload.body,
+        body,
         direction: "incoming",
         status: "delivered",
         createdAt: parsed.data.createdAt,
@@ -321,12 +335,23 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     if (parsed.data.type === "message.incoming") {
       const account = this.requireAccount();
       const connection = this.store.getConnection(parsed.data.fromUsername);
+      let body: string;
+      try {
+        body = decryptDirectPayload({
+          account,
+          messageId: parsed.data.messageId,
+          payload: parsed.data.payload,
+        });
+      } catch (error) {
+        this.recordError(error);
+        body = "[unable to decrypt message for this device]";
+      }
       const message: LocalMessage = {
         id: parsed.data.messageId,
         conversationId: directConversationId(account.userId, parsed.data.fromUserId),
         peerUsername: parsed.data.fromUsername,
         senderUsername: parsed.data.fromUsername,
-        body: parsed.data.payload.body,
+        body,
         direction: "incoming",
         status: "delivered",
         createdAt: parsed.data.createdAt,

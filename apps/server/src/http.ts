@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   authResponseSchema,
   connectionSchema,
+  deviceKeyBundleSchema,
   groupSchema,
   loginRequestSchema,
   signupRequestSchema,
@@ -108,6 +109,52 @@ export async function handleHttp(
         [userLow, userHigh],
       );
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const devicesMatch = url.pathname.match(/^\/users\/([^/]+)\/devices$/);
+    if (req.method === "GET" && devicesMatch) {
+      const session = await requireAuth(req, context.config);
+      const encodedUsername = devicesMatch[1];
+      if (!encodedUsername) {
+        sendJson(res, 400, { error: "missing_username" });
+        return;
+      }
+      const username = usernameSchema.parse(decodeURIComponent(encodedUsername));
+      const target = await context.db.query(`SELECT id FROM users WHERE username = $1`, [username]);
+      if (target.rowCount === 0) {
+        sendJson(res, 404, { error: "user_not_found" });
+        return;
+      }
+      const targetId = target.rows[0].id as string;
+      if (targetId !== session.userId) {
+        const [userLow, userHigh] = [session.userId, targetId].sort();
+        const connection = await context.db.query(
+          `SELECT 1 FROM direct_connections WHERE user_low = $1 AND user_high = $2`,
+          [userLow, userHigh],
+        );
+        if (connection.rowCount === 0) {
+          sendJson(res, 403, { error: "not_connected" });
+          return;
+        }
+      }
+      const devices = await context.db.query(
+        `SELECT id, device_name, public_identity_key, last_seen_at
+         FROM devices
+         WHERE user_id = $1
+         ORDER BY created_at ASC`,
+        [targetId],
+      );
+      sendJson(res, 200, {
+        devices: devices.rows.map((row) =>
+          deviceKeyBundleSchema.parse({
+            deviceId: row.id,
+            deviceName: row.device_name,
+            publicIdentityKey: row.public_identity_key,
+            lastSeenAt: row.last_seen_at ? row.last_seen_at.toISOString() : null,
+          }),
+        ),
+      });
       return;
     }
 
