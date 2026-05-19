@@ -1,8 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { hash, verify } from "@node-rs/argon2";
+import { sql } from "drizzle-orm";
 import { jwtVerify, SignJWT } from "jose";
-import type { Db } from "./db.js";
 import type { ServerConfig } from "./config.js";
+import type { Db } from "./db.js";
+import { sessions } from "./schema.js";
 
 export type AuthenticatedSession = {
   userId: string;
@@ -77,7 +79,7 @@ export async function verifyAccessToken(
 }
 
 export async function createSession(
-  db: Db,
+  db: { insert: Db["insert"] },
   config: ServerConfig,
   user: { id: string; username: string },
   deviceId: string,
@@ -85,11 +87,14 @@ export async function createSession(
   const sessionId = randomUUID();
   const refreshToken = createRefreshToken();
   const refreshTokenHash = hashRefreshToken(refreshToken);
-  await db.query(
-    `INSERT INTO sessions (id, user_id, device_id, refresh_token_hash, expires_at)
-     VALUES ($1, $2, $3, $4, now() + ($5::int * interval '1 day'))`,
-    [sessionId, user.id, deviceId, refreshTokenHash, config.refreshTokenTtlDays],
-  );
+
+  await db.insert(sessions).values({
+    id: sessionId,
+    userId: user.id,
+    deviceId,
+    refreshTokenHash,
+    expiresAt: sql`now() + (${config.refreshTokenTtlDays} * interval '1 day')`,
+  });
 
   const accessToken = await signAccessToken(config, {
     sub: user.id,

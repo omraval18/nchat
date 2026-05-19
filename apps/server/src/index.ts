@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
 import { loadConfig } from "./config.js";
-import { createDb, migrate } from "./db.js";
+import { createDb, runMigrations } from "./db.js";
 import { handleHttp } from "./http.js";
 import { createRealtimeHub } from "./ws.js";
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
-await migrate(db);
+await runMigrations(db);
 
 const hub = createRealtimeHub(db, config);
 const server = createServer((req, res) => {
@@ -31,6 +31,6 @@ process.on("SIGTERM", () => shutdown());
 
 function shutdown(): void {
   server.close(() => {
-    void db.end().finally(() => process.exit(0));
+    process.exit(0);
   });
 }

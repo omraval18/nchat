@@ -9,8 +9,10 @@ import {
   signupRequestSchema,
   usernameSchema,
 } from "@nchat/protocol";
-import type { Db } from "./db.js";
+import { and, asc, count, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { ServerConfig } from "./config.js";
+import type { Db } from "./db.js";
 import {
   createSession,
   hashPassword,
@@ -19,6 +21,14 @@ import {
   verifyAccessToken,
   verifyPassword,
 } from "./auth.js";
+import {
+  devices,
+  directConnections,
+  groupMembers,
+  groups,
+  sessions,
+  users,
+} from "./schema.js";
 
 const maxBodyBytes = 1_000_000;
 
@@ -64,21 +74,25 @@ export async function handleHttp(
 
     if (req.method === "GET" && url.pathname === "/connections") {
       const session = await requireAuth(req, context.config);
-      const rows = await context.db.query(
-        `SELECT u.id as user_id, u.username, u.display_name
-         FROM direct_connections c
-         JOIN users u ON u.id = CASE WHEN c.user_low = $1 THEN c.user_high ELSE c.user_low END
-         WHERE c.user_low = $1 OR c.user_high = $1
-         ORDER BY u.username ASC`,
-        [session.userId],
-      );
-      const connections = rows.rows.map((row) =>
-        connectionSchema.parse({
-          userId: row.user_id,
-          username: row.username,
-          displayName: row.display_name,
-          online: context.onlineUsers.has(row.user_id),
-        }),
+      const rows = await context.db
+        .select({ userId: users.id, username: users.username, displayName: users.displayName })
+        .from(directConnections)
+        .innerJoin(
+          users,
+          eq(
+            users.id,
+            sql<string>`CASE WHEN ${directConnections.userLow} = ${session.userId}::uuid THEN ${directConnections.userHigh} ELSE ${directConnections.userLow} END`,
+          ),
+        )
+        .where(
+          or(
+            eq(directConnections.userLow, session.userId),
+            eq(directConnections.userHigh, session.userId),
+          ),
+        )
+        .orderBy(asc(users.username));
+      const connections = rows.map((row) =>
+        connectionSchema.parse({ ...row, online: context.onlineUsers.has(row.userId) }),
       );
       sendJson(res, 200, { connections });
       return;
@@ -88,26 +102,23 @@ export async function handleHttp(
       const session = await requireAuth(req, context.config);
       const body = await readJson(req);
       const username = usernameSchema.parse(body.username);
-      const target = await context.db.query(
-        `SELECT id FROM users WHERE username = $1`,
-        [username],
-      );
-      if (target.rowCount === 0) {
+      const [target] = await context.db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.username, username));
+      if (!target) {
         sendJson(res, 404, { error: "user_not_found" });
         return;
       }
-      const targetId = target.rows[0].id as string;
-      if (targetId === session.userId) {
+      if (target.id === session.userId) {
         sendJson(res, 400, { error: "cannot_connect_self" });
         return;
       }
-      const [userLow, userHigh] = [session.userId, targetId].sort();
-      await context.db.query(
-        `INSERT INTO direct_connections (user_low, user_high)
-         VALUES ($1, $2)
-         ON CONFLICT DO NOTHING`,
-        [userLow, userHigh],
-      );
+      const [userLow, userHigh] = [session.userId, target.id].sort() as [string, string];
+      await context.db
+        .insert(directConnections)
+        .values({ userLow, userHigh })
+        .onConflictDoNothing();
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -121,37 +132,47 @@ export async function handleHttp(
         return;
       }
       const username = usernameSchema.parse(decodeURIComponent(encodedUsername));
-      const target = await context.db.query(`SELECT id FROM users WHERE username = $1`, [username]);
-      if (target.rowCount === 0) {
+      const [target] = await context.db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.username, username));
+      if (!target) {
         sendJson(res, 404, { error: "user_not_found" });
         return;
       }
-      const targetId = target.rows[0].id as string;
-      if (targetId !== session.userId) {
-        const [userLow, userHigh] = [session.userId, targetId].sort();
-        const connection = await context.db.query(
-          `SELECT 1 FROM direct_connections WHERE user_low = $1 AND user_high = $2`,
-          [userLow, userHigh],
-        );
-        if (connection.rowCount === 0) {
+      if (target.id !== session.userId) {
+        const [userLow, userHigh] = [session.userId, target.id].sort() as [string, string];
+        const [connection] = await context.db
+          .select()
+          .from(directConnections)
+          .where(
+            and(
+              eq(directConnections.userLow, userLow),
+              eq(directConnections.userHigh, userHigh),
+            ),
+          );
+        if (!connection) {
           sendJson(res, 403, { error: "not_connected" });
           return;
         }
       }
-      const devices = await context.db.query(
-        `SELECT id, device_name, public_identity_key, last_seen_at
-         FROM devices
-         WHERE user_id = $1
-         ORDER BY created_at ASC`,
-        [targetId],
-      );
+      const deviceRows = await context.db
+        .select({
+          id: devices.id,
+          deviceName: devices.deviceName,
+          publicIdentityKey: devices.publicIdentityKey,
+          lastSeenAt: devices.lastSeenAt,
+        })
+        .from(devices)
+        .where(eq(devices.userId, target.id))
+        .orderBy(asc(devices.createdAt));
       sendJson(res, 200, {
-        devices: devices.rows.map((row) =>
+        devices: deviceRows.map((row) =>
           deviceKeyBundleSchema.parse({
             deviceId: row.id,
-            deviceName: row.device_name,
-            publicIdentityKey: row.public_identity_key,
-            lastSeenAt: row.last_seen_at ? row.last_seen_at.toISOString() : null,
+            deviceName: row.deviceName,
+            publicIdentityKey: row.publicIdentityKey,
+            lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
           }),
         ),
       });
@@ -160,25 +181,22 @@ export async function handleHttp(
 
     if (req.method === "GET" && url.pathname === "/groups") {
       const session = await requireAuth(req, context.config);
-      const rows = await context.db.query(
-        `SELECT g.id, g.name, g.owner_user_id, count(gm_all.user_id)::int as member_count
-         FROM group_members gm
-         JOIN groups g ON g.id = gm.group_id
-         JOIN group_members gm_all ON gm_all.group_id = g.id
-         WHERE gm.user_id = $1
-         GROUP BY g.id
-         ORDER BY g.name ASC`,
-        [session.userId],
-      );
+      const gmAll = alias(groupMembers, "gm_all");
+      const rows = await context.db
+        .select({
+          id: groups.id,
+          name: groups.name,
+          ownerUserId: groups.ownerUserId,
+          memberCount: count(gmAll.userId),
+        })
+        .from(groupMembers)
+        .innerJoin(groups, eq(groups.id, groupMembers.groupId))
+        .innerJoin(gmAll, eq(gmAll.groupId, groups.id))
+        .where(eq(groupMembers.userId, session.userId))
+        .groupBy(groups.id)
+        .orderBy(asc(groups.name));
       sendJson(res, 200, {
-        groups: rows.rows.map((row) =>
-          groupSchema.parse({
-            id: row.id,
-            name: row.name,
-            ownerUserId: row.owner_user_id,
-            memberCount: row.member_count,
-          }),
-        ),
+        groups: rows.map((row) => groupSchema.parse(row)),
       });
       return;
     }
@@ -192,22 +210,10 @@ export async function handleHttp(
         return;
       }
       const groupId = randomUUID();
-      await context.db.query("BEGIN");
-      try {
-        await context.db.query(`INSERT INTO groups (id, name, owner_user_id) VALUES ($1, $2, $3)`, [
-          groupId,
-          name,
-          session.userId,
-        ]);
-        await context.db.query(
-          `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')`,
-          [groupId, session.userId],
-        );
-        await context.db.query("COMMIT");
-      } catch (error) {
-        await context.db.query("ROLLBACK");
-        throw error;
-      }
+      await context.db.transaction(async (tx) => {
+        await tx.insert(groups).values({ id: groupId, name, ownerUserId: session.userId });
+        await tx.insert(groupMembers).values({ groupId, userId: session.userId, role: "owner" });
+      });
       sendJson(
         res,
         201,
@@ -219,39 +225,49 @@ export async function handleHttp(
     const groupMemberMatch = url.pathname.match(/^\/groups\/([^/]+)\/members$/);
     if (req.method === "POST" && groupMemberMatch) {
       const session = await requireAuth(req, context.config);
-      const groupId = groupMemberMatch[1];
+      const groupId = groupMemberMatch[1]!;
       const body = await readJson(req);
       const username = usernameSchema.parse(body.username);
-      const group = await context.db.query(`SELECT owner_user_id FROM groups WHERE id = $1`, [groupId]);
-      if (group.rowCount === 0) {
+      const [group] = await context.db
+        .select({ ownerUserId: groups.ownerUserId })
+        .from(groups)
+        .where(eq(groups.id, groupId));
+      if (!group) {
         sendJson(res, 404, { error: "group_not_found" });
         return;
       }
-      if (group.rows[0].owner_user_id !== session.userId) {
+      if (group.ownerUserId !== session.userId) {
         sendJson(res, 403, { error: "group_owner_required" });
         return;
       }
-      const target = await context.db.query(`SELECT id FROM users WHERE username = $1`, [username]);
-      if (target.rowCount === 0) {
+      const [target] = await context.db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.username, username));
+      if (!target) {
         sendJson(res, 404, { error: "user_not_found" });
         return;
       }
-      const targetId = target.rows[0].id as string;
-      const [userLow, userHigh] = [session.userId, targetId].sort();
-      const connection = await context.db.query(
-        `SELECT 1 FROM direct_connections WHERE user_low = $1 AND user_high = $2`,
-        [userLow, userHigh],
-      );
-      if (connection.rowCount === 0 && targetId !== session.userId) {
-        sendJson(res, 403, { error: "not_connected" });
-        return;
+      if (target.id !== session.userId) {
+        const [userLow, userHigh] = [session.userId, target.id].sort() as [string, string];
+        const [connection] = await context.db
+          .select()
+          .from(directConnections)
+          .where(
+            and(
+              eq(directConnections.userLow, userLow),
+              eq(directConnections.userHigh, userHigh),
+            ),
+          );
+        if (!connection) {
+          sendJson(res, 403, { error: "not_connected" });
+          return;
+        }
       }
-      await context.db.query(
-        `INSERT INTO group_members (group_id, user_id, role)
-         VALUES ($1, $2, 'member')
-         ON CONFLICT DO NOTHING`,
-        [groupId, targetId],
-      );
+      await context.db
+        .insert(groupMembers)
+        .values({ groupId, userId: target.id, role: "member" })
+        .onConflictDoNothing();
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -274,19 +290,21 @@ async function handleSignup(
   const passwordHash = await hashPassword(body.password);
 
   try {
-    await db.query("BEGIN");
-    await db.query(
-      `INSERT INTO users (id, username, display_name, password_hash)
-       VALUES ($1, $2, $3, $4)`,
-      [userId, body.username, body.displayName, passwordHash],
-    );
-    await db.query(
-      `INSERT INTO devices (id, user_id, device_name, public_identity_key)
-       VALUES ($1, $2, $3, $4)`,
-      [deviceId, userId, body.deviceName, body.publicIdentityKey],
-    );
-    const session = await createSession(db, config, { id: userId, username: body.username }, deviceId);
-    await db.query("COMMIT");
+    const session = await db.transaction(async (tx) => {
+      await tx.insert(users).values({
+        id: userId,
+        username: body.username,
+        displayName: body.displayName,
+        passwordHash,
+      });
+      await tx.insert(devices).values({
+        id: deviceId,
+        userId,
+        deviceName: body.deviceName,
+        publicIdentityKey: body.publicIdentityKey,
+      });
+      return createSession(tx, config, { id: userId, username: body.username }, deviceId);
+    });
 
     sendJson(
       res,
@@ -299,7 +317,6 @@ async function handleSignup(
       }),
     );
   } catch (error) {
-    await db.query("ROLLBACK");
     if (isUniqueViolation(error)) {
       sendJson(res, 409, { error: "username_taken" });
       return;
@@ -314,26 +331,31 @@ async function handleLogin(
   { db, config }: RouteContext,
 ): Promise<void> {
   const body = loginRequestSchema.parse(await readJson(req));
-  const userResult = await db.query(
-    `SELECT id, username, display_name, password_hash FROM users WHERE username = $1`,
-    [body.username],
-  );
-  if (userResult.rowCount === 0) {
+  const [user] = await db
+    .select({
+      id: users.id,
+      username: users.username,
+      displayName: users.displayName,
+      passwordHash: users.passwordHash,
+    })
+    .from(users)
+    .where(eq(users.username, body.username));
+  if (!user) {
     sendJson(res, 401, { error: "invalid_credentials" });
     return;
   }
-  const user = userResult.rows[0];
-  if (!(await verifyPassword(user.password_hash, body.password))) {
+  if (!(await verifyPassword(user.passwordHash, body.password))) {
     sendJson(res, 401, { error: "invalid_credentials" });
     return;
   }
 
   const deviceId = randomUUID();
-  await db.query(
-    `INSERT INTO devices (id, user_id, device_name, public_identity_key)
-     VALUES ($1, $2, $3, $4)`,
-    [deviceId, user.id, body.deviceName, body.publicIdentityKey],
-  );
+  await db.insert(devices).values({
+    id: deviceId,
+    userId: user.id,
+    deviceName: body.deviceName,
+    publicIdentityKey: body.publicIdentityKey,
+  });
   const session = await createSession(db, config, { id: user.id, username: user.username }, deviceId);
 
   sendJson(
@@ -342,7 +364,7 @@ async function handleLogin(
     authResponseSchema.parse({
       accessToken: session.accessToken,
       refreshToken: session.refreshToken,
-      user: { id: user.id, username: user.username, displayName: user.display_name },
+      user: { id: user.id, username: user.username, displayName: user.displayName },
       device: { id: deviceId, publicIdentityKey: body.publicIdentityKey },
     }),
   );
@@ -359,23 +381,31 @@ async function handleRefresh(
     return;
   }
   const refreshTokenHash = hashRefreshToken(body.refreshToken);
-  const result = await db.query(
-    `SELECT s.id as session_id, s.user_id, s.device_id, u.username
-     FROM sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.refresh_token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`,
-    [refreshTokenHash],
-  );
-  if (result.rowCount === 0) {
+  const [row] = await db
+    .select({
+      sessionId: sessions.id,
+      userId: sessions.userId,
+      deviceId: sessions.deviceId,
+      username: users.username,
+    })
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .where(
+      and(
+        eq(sessions.refreshTokenHash, refreshTokenHash),
+        isNull(sessions.revokedAt),
+        gt(sessions.expiresAt, sql`now()`),
+      ),
+    );
+  if (!row) {
     sendJson(res, 401, { error: "invalid_refresh_token" });
     return;
   }
-  const row = result.rows[0];
   const accessToken = await signAccessToken(config, {
-    sub: row.user_id,
+    sub: row.userId,
     username: row.username,
-    deviceId: row.device_id,
-    sessionId: row.session_id,
+    deviceId: row.deviceId,
+    sessionId: row.sessionId,
   });
   sendJson(res, 200, { accessToken });
 }

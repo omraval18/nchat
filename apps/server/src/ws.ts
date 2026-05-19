@@ -7,12 +7,14 @@ import {
   serverMessageIncomingSchema,
   type ServerWsEvent,
 } from "@nchat/protocol";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { WebSocket } from "ws";
 import { WebSocketServer } from "ws";
 import type { AuthenticatedSession } from "./auth.js";
 import { verifyAccessToken } from "./auth.js";
 import type { ServerConfig } from "./config.js";
 import type { Db } from "./db.js";
+import { devices, directConnections, groupMembers, groups, users } from "./schema.js";
 
 type ClientSocket = {
   ws: WebSocket;
@@ -37,7 +39,7 @@ export function createRealtimeHub(db: Db, config: ServerConfig): RealtimeHub {
     const client: ClientSocket = { ws, session };
     addSocket(socketsByUserId, client);
 
-    void db.query(`UPDATE devices SET last_seen_at = now() WHERE id = $1`, [session.deviceId]);
+    void db.update(devices).set({ lastSeenAt: sql`now()` }).where(eq(devices.id, session.deviceId));
     broadcastPresence(socketsByUserId, session.username, true);
 
     ws.on("message", (raw) => {
@@ -88,26 +90,31 @@ async function handleSocketMessage(
   }
 
   if (parsed.data.type === "message.send") {
-    const recipient = await db.query(`SELECT id, username FROM users WHERE username = $1`, [
-      parsed.data.toUsername,
-    ]);
-    if (recipient.rowCount === 0) {
+    const [recipient] = await db
+      .select({ id: users.id, username: users.username })
+      .from(users)
+      .where(eq(users.username, parsed.data.toUsername));
+    if (!recipient) {
       sendAck(client.ws, parsed.data.messageId, "failed", "recipient_not_found");
       return;
     }
 
-    const recipientUserId = recipient.rows[0].id as string;
-    const [userLow, userHigh] = [client.session.userId, recipientUserId].sort();
-    const connection = await db.query(
-      `SELECT 1 FROM direct_connections WHERE user_low = $1 AND user_high = $2`,
-      [userLow, userHigh],
-    );
-    if (connection.rowCount === 0) {
+    const [userLow, userHigh] = [client.session.userId, recipient.id].sort() as [string, string];
+    const [connection] = await db
+      .select()
+      .from(directConnections)
+      .where(
+        and(
+          eq(directConnections.userLow, userLow),
+          eq(directConnections.userHigh, userHigh),
+        ),
+      );
+    if (!connection) {
       sendAck(client.ws, parsed.data.messageId, "failed", "not_connected");
       return;
     }
 
-    const recipientSockets = socketsByUserId.get(recipientUserId);
+    const recipientSockets = socketsByUserId.get(recipient.id);
     if (!recipientSockets || recipientSockets.size === 0) {
       sendAck(client.ws, parsed.data.messageId, "failed", "recipient_offline");
       return;
@@ -129,27 +136,32 @@ async function handleSocketMessage(
   }
 
   if (parsed.data.type === "group.message.send") {
-    const group = await db.query(
-      `SELECT g.id, g.name
-       FROM groups g
-       JOIN group_members gm ON gm.group_id = g.id
-       WHERE g.id = $1 AND gm.user_id = $2`,
-      [parsed.data.groupId, client.session.userId],
-    );
-    if (group.rowCount === 0) {
+    const [group] = await db
+      .select({ id: groups.id, name: groups.name })
+      .from(groups)
+      .innerJoin(groupMembers, eq(groupMembers.groupId, groups.id))
+      .where(
+        and(eq(groups.id, parsed.data.groupId), eq(groupMembers.userId, client.session.userId)),
+      );
+    if (!group) {
       sendAck(client.ws, parsed.data.messageId, "failed", "not_group_member");
       return;
     }
 
-    const members = await db.query(
-      `SELECT user_id FROM group_members WHERE group_id = $1 AND user_id <> $2`,
-      [parsed.data.groupId, client.session.userId],
-    );
+    const members = await db
+      .select({ userId: groupMembers.userId })
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, parsed.data.groupId),
+          ne(groupMembers.userId, client.session.userId),
+        ),
+      );
     const incoming = serverGroupMessageIncomingSchema.parse({
       type: "group.message.incoming",
       messageId: parsed.data.messageId,
       groupId: parsed.data.groupId,
-      groupName: group.rows[0].name,
+      groupName: group.name,
       fromUsername: client.session.username,
       fromUserId: client.session.userId,
       payload: parsed.data.payload,
@@ -157,8 +169,8 @@ async function handleSocketMessage(
     });
 
     let delivered = 0;
-    for (const member of members.rows) {
-      const recipientSockets = socketsByUserId.get(member.user_id as string);
+    for (const member of members) {
+      const recipientSockets = socketsByUserId.get(member.userId);
       if (!recipientSockets) continue;
       for (const recipientClient of recipientSockets) {
         send(recipientClient.ws, incoming);
