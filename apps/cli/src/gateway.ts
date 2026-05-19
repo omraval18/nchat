@@ -5,6 +5,7 @@ import {
   encodePlaintextPayload,
   serverWsEventSchema,
   type Connection,
+  type DeviceKeyBundle,
   type DirectMessagePayload,
   type Group,
   type MessageStatus,
@@ -122,6 +123,13 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
     await this.refreshConnections();
   }
 
+  async listUserDevices(username: string): Promise<DeviceKeyBundle[]> {
+    const account = await this.accountWithFreshToken();
+    const devices = await this.api.listUserDevices(username, account.accessToken);
+    this.store.rememberDeviceKeys(username, devices);
+    return devices;
+  }
+
   getMessages(peerUsername: string): LocalMessage[] {
     return this.store.listMessages(peerUsername);
   }
@@ -150,7 +158,7 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
       createdAt,
       updatedAt: createdAt,
     };
-    const recipientDevices = await this.api.listUserDevices(peerUsername, account.accessToken);
+    const recipientDevices = await this.listUserDevices(peerUsername);
     const payload = encryptDirectPayload({
       account,
       messageId,

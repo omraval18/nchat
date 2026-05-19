@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { loadClientConfig } from "./config.js";
+import { publicKeyFingerprint } from "./e2ee.js";
 import { ClientGateway } from "./gateway.js";
 import { LocalStore } from "./local-store.js";
 import { NchatTui } from "./tui.js";
@@ -63,6 +64,23 @@ program
     }
     for (const connection of connections) {
       console.log(`${connection.username}\t${connection.displayName}\t${connection.online ? "online" : "offline"}`);
+    }
+  });
+
+program
+  .command("devices")
+  .argument("<username>")
+  .description("list known public devices for a direct connection")
+  .action(async (username: string) => {
+    const devices = await gateway.listUserDevices(username);
+    if (devices.length === 0) {
+      console.log(`no devices for ${username}`);
+      return;
+    }
+    for (const device of devices) {
+      console.log(
+        `${device.deviceName}\t${device.deviceId}\t${publicKeyFingerprint(device.publicIdentityKey)}\t${device.lastSeenAt ?? "never seen"}`,
+      );
     }
   });
 

@@ -1,4 +1,5 @@
 import {
+  createHash,
   createCipheriv,
   createDecipheriv,
   createPrivateKey,
@@ -85,6 +86,11 @@ export function decryptDirectPayload(input: {
     throw new Error("invalid encrypted message body");
   }
   return parsed.body;
+}
+
+export function publicKeyFingerprint(publicIdentityKey: string): string {
+  const digest = createHash("sha256").update(Buffer.from(publicIdentityKey, "base64url")).digest("hex");
+  return digest.match(/.{1,4}/g)?.slice(0, 8).join(" ") ?? digest;
 }
 
 function deriveDirectKey(input: {

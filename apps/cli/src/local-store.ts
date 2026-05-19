@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AuthResponse, Connection, Group, MessageStatus } from "@nchat/protocol";
+import type { DeviceKeyBundle } from "@nchat/protocol";
 
 export type LocalAccount = {
   userId: string;
@@ -37,6 +38,12 @@ export type OutboxItem = {
 };
 
 export type LocalGroup = Group;
+
+export type KnownDevice = DeviceKeyBundle & {
+  username: string;
+  firstSeenAt: number;
+  lastSeenAtLocal: number;
+};
 
 export class LocalStore {
   private readonly db: DatabaseSync;
@@ -166,6 +173,52 @@ export class LocalStore {
     return { userId: row.user_id, username: row.username, displayName: row.display_name, online: row.online === 1 };
   }
 
+  rememberDeviceKeys(username: string, devices: DeviceKeyBundle[]): void {
+    const now = Date.now();
+    const read = this.db.prepare(`SELECT public_identity_key FROM device_keys WHERE device_id = ?`);
+    const insert = this.db.prepare(
+      `INSERT INTO device_keys (
+        username, device_id, device_name, public_identity_key, server_last_seen_at, first_seen_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device_id) DO UPDATE SET
+        username = excluded.username,
+        device_name = excluded.device_name,
+        server_last_seen_at = excluded.server_last_seen_at,
+        last_seen_at = excluded.last_seen_at`,
+    );
+
+    for (const device of devices) {
+      const existing = read.get(device.deviceId) as { public_identity_key: string } | undefined;
+      if (existing && existing.public_identity_key !== device.publicIdentityKey) {
+        throw new Error(`device key changed for ${username} device ${device.deviceId}; refusing to encrypt`);
+      }
+      insert.run(
+        username,
+        device.deviceId,
+        device.deviceName,
+        device.publicIdentityKey,
+        device.lastSeenAt,
+        now,
+        now,
+      );
+    }
+  }
+
+  listKnownDevices(username: string): KnownDevice[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM device_keys WHERE username = ? ORDER BY first_seen_at ASC`)
+      .all(username) as DeviceKeyRow[];
+    return rows.map((row) => ({
+      username: row.username,
+      deviceId: row.device_id,
+      deviceName: row.device_name,
+      publicIdentityKey: row.public_identity_key,
+      lastSeenAt: row.server_last_seen_at,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAtLocal: row.last_seen_at,
+    }));
+  }
+
   insertMessage(message: LocalMessage): void {
     this.db
       .prepare(
@@ -287,6 +340,16 @@ export class LocalStore {
         updated_at integer NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS device_keys (
+        username text NOT NULL,
+        device_id text PRIMARY KEY,
+        device_name text NOT NULL,
+        public_identity_key text NOT NULL,
+        server_last_seen_at text,
+        first_seen_at integer NOT NULL,
+        last_seen_at integer NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS outbox (
         id text PRIMARY KEY,
         message_id text NOT NULL,
@@ -300,6 +363,7 @@ export class LocalStore {
 
       CREATE INDEX IF NOT EXISTS messages_peer_created_idx ON messages(peer_username, created_at);
       CREATE INDEX IF NOT EXISTS outbox_status_next_idx ON outbox(status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS device_keys_username_idx ON device_keys(username);
     `);
   }
 }
@@ -349,6 +413,16 @@ type GroupRow = {
   name: string;
   owner_user_id: string;
   member_count: number;
+};
+
+type DeviceKeyRow = {
+  username: string;
+  device_id: string;
+  device_name: string;
+  public_identity_key: string;
+  server_last_seen_at: string | null;
+  first_seen_at: number;
+  last_seen_at: number;
 };
 
 function rowToMessage(row: MessageRow): LocalMessage {
