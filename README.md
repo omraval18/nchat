@@ -8,7 +8,9 @@ Current implementation:
 - Central transport server backed by Postgres.
 - Local client storage in SQLite on the user's machine.
 - Username/password signup/login with Argon2id password hashing.
-- Per-device identity key generation, stored for future E2EE integration.
+- Per-device identity key generation.
+- E2EE direct messages using X25519-derived AES-256-GCM payloads.
+- Device key pinning and public-key fingerprints.
 - One-to-one direct messaging through WebSockets.
 - Group creation, owner-only member add, group message relay.
 - Slash-command TUI flow inspired by pi-agent: `/ping`, `/group`, `/grpadd` with dropdown-style suggestions.
@@ -68,6 +70,14 @@ On success:
 sent to bob
 ```
 
+Direct message payloads are encrypted before they enter the WebSocket outbox. The transport server sees only an opaque `direct.e2ee.v1` envelope.
+
+Inspect a connection's device keys and fingerprints:
+
+```bash
+NCHAT_HOME=.local/alice pnpm --filter nchat dev devices bob
+```
+
 ## Groups
 
 Create a group:
@@ -110,13 +120,26 @@ Autocomplete behavior:
 - `Tab` applies the selected suggestion.
 - Up/down changes the selected suggestion.
 
-## E2EE Readiness
+## E2EE Status
 
-Encryption is intentionally not implemented yet. The code is structured so E2EE can be added without replacing the transport or TUI:
+Direct messages are encrypted end-to-end at the payload layer:
 
 - Users can have multiple devices.
 - Devices register public identity keys at signup/login.
-- Message transport uses a payload envelope currently marked `plaintext.v1`.
+- The client fetches public device keys for direct connections only.
+- The client encrypts each direct message once per recipient device.
+- The local sender and receiver store plaintext locally after composing/decrypting.
+- The outbox stores encrypted `direct.e2ee.v1` payloads.
+- The client pins known device IDs to their first-seen public key and refuses to encrypt if that key changes.
+
+Current limitations:
+
+- Group messages are still `plaintext.v1`; proper group encryption needs group key management rather than reusing direct-message encryption.
+- Public key fingerprints are visible, but there is not yet an explicit user verification ceremony.
+- Local SQLite is not encrypted at rest.
+- The server still controls device discovery, so users should verify fingerprints before relying on strong identity guarantees.
+
+Future E2EE work should add verified devices, explicit trust states, encrypted group sender keys, and local database encryption.
 - Local gateway owns encode/send/store boundaries.
 
 Future E2EE work should replace plaintext payload encoding with encrypted payloads and introduce device key bundles, prekeys, verified devices, and group key management.
