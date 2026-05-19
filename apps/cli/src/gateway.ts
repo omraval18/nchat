@@ -389,7 +389,12 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
 
   private async accountWithFreshToken(): Promise<LocalAccount> {
     const account = this.requireAccount();
-    return account;
+    if (!isTokenExpiring(account.accessToken)) {
+      return account;
+    }
+    const refreshed = await this.api.refresh(account.refreshToken);
+    this.store.updateAccessToken(refreshed.accessToken);
+    return this.requireAccount();
   }
 
   private requireAccount(): LocalAccount {
@@ -411,4 +416,17 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
 
 export function groupConversationKey(groupId: string): string {
   return `group:${groupId}`;
+}
+
+function isTokenExpiring(accessToken: string): boolean {
+  const [, payload] = accessToken.split(".");
+  if (!payload) return true;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown };
+    if (typeof decoded.exp !== "number") return true;
+    const expiresAtMs = decoded.exp * 1000;
+    return expiresAtMs - Date.now() < 60_000;
+  } catch {
+    return true;
+  }
 }
