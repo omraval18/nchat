@@ -17,14 +17,17 @@ import {
 } from "./gateway.js";
 import type { LocalMessage } from "./local-store.js";
 
+const ESC = "";
 const ansi = {
-  reset: "\u001b[0m",
-  bold: "\u001b[1m",
-  dim: "\u001b[2m",
-  cyan: "\u001b[36m",
-  green: "\u001b[32m",
-  yellow: "\u001b[33m",
-  red: "\u001b[31m",
+  reset: `${ESC}[0m`,
+  bold: `${ESC}[1m`,
+  dim: `${ESC}[2m`,
+  cyan: `${ESC}[36m`,
+  green: `${ESC}[32m`,
+  yellow: `${ESC}[33m`,
+  red: `${ESC}[31m`,
+  bgOutgoing: `${ESC}[48;5;24m${ESC}[97m`,
+  bgIncoming: `${ESC}[48;5;237m${ESC}[97m`,
 };
 
 const cyan = (text: string): string => `${ansi.cyan}${text}${ansi.reset}`;
@@ -46,8 +49,9 @@ const editorTheme: EditorTheme = {
 };
 
 type UiEntry = {
-  role: "system" | "incoming" | "outgoing" | "error";
+  role: "system" | "incoming" | "outgoing" | "error" | "separator";
   text: string;
+  sender?: string;
 };
 
 export class NchatTui {
@@ -293,9 +297,18 @@ export class NchatTui {
         ? this.gateway.getMessages(this.activePeer)
         : [];
 
-    this.transcript.replaceConversationEntries(
-      messages.map((message) => toUiEntry(message)),
-    );
+    const entries: UiEntry[] = [];
+    let lastDateKey: string | null = null;
+    for (const message of messages) {
+      const dateKey = new Date(message.createdAt).toDateString();
+      if (dateKey !== lastDateKey) {
+        entries.push({ role: "separator", text: formatDateLabel(message.createdAt) });
+        lastDateKey = dateKey;
+      }
+      entries.push(toUiEntry(message));
+    }
+
+    this.transcript.replaceConversationEntries(entries);
   }
 
   private updateFooter(): void {
@@ -431,15 +444,42 @@ class TranscriptLog implements Component {
 
   render(width: number): string[] {
     const lines: string[] = [];
-    const contentWidth = Math.max(12, width - 2);
 
     for (const entry of this.entries) {
-      lines.push(truncateToWidth(this.label(entry.role), width));
+      if (entry.role === "separator") {
+        const label = `  ${entry.text}  `;
+        const totalDashes = Math.max(0, width - label.length);
+        const left = Math.floor(totalDashes / 2);
+        const right = totalDashes - left;
+        const line = "─".repeat(left) + label + "─".repeat(right);
+        lines.push(dim(line));
+        lines.push("");
+        continue;
+      }
+
+      if (entry.role === "system" || entry.role === "error") {
+        const label = entry.role === "error" ? red("✗") : yellow("»");
+        lines.push(truncateToWidth(`${label} ${entry.text}`, width));
+        lines.push("");
+        continue;
+      }
+
+      const senderColor = entry.role === "outgoing" ? cyan : green;
+      lines.push(truncateToWidth(senderColor(entry.sender ?? entry.role), width));
+
+      const bg =
+        entry.role === "outgoing" ? ansi.bgOutgoing : ansi.bgIncoming;
+      const textWidth = Math.max(1, width - 4);
+      const emptyRow = `${bg}  ${"".padEnd(textWidth)}  ${ansi.reset}`;
+
+      lines.push(emptyRow);
       for (const rawLine of (entry.text || "").split("\n")) {
-        for (const wrapped of wrapPlainLine(`  ${rawLine}`, contentWidth)) {
-          lines.push(truncateToWidth(wrapped, width));
+        for (const wrapped of wrapPlainLine(rawLine, textWidth)) {
+          lines.push(`${bg}  ${wrapped.padEnd(textWidth)}  ${ansi.reset}`);
         }
       }
+      lines.push(emptyRow);
+
       lines.push("");
     }
 
@@ -449,26 +489,26 @@ class TranscriptLog implements Component {
 
     return lines;
   }
+}
 
-  private label(role: UiEntry["role"]): string {
-    if (role === "outgoing") return cyan("you");
-    if (role === "incoming") return green("peer");
-    if (role === "error") return red("error");
-    return yellow("nchat");
-  }
+function formatDateLabel(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 function toUiEntry(message: LocalMessage): UiEntry {
-  const prefix =
-    message.direction === "outgoing"
-      ? `to ${message.peerUsername}`
-      : `from ${message.senderUsername}`;
-  const status = message.direction === "outgoing" ? ` [${message.status}]` : "";
   const ts = new Date(message.createdAt).toLocaleTimeString();
-  return {
-    role: message.direction === "outgoing" ? "outgoing" : "incoming",
-    text: `${prefix} · ${ts}\n${message.body}${status}`,
-  };
+  const role = message.direction === "outgoing" ? "outgoing" : "incoming";
+  const sender =
+    role === "outgoing"
+      ? `me · ${ts} [${message.status}]`
+      : `${message.senderUsername} · ${ts}`;
+  return { role, sender, text: message.body };
 }
 
 function wrapPlainLine(line: string, width: number): string[] {
