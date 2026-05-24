@@ -12,7 +12,11 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src --max-warnings 0"
   },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "dependencies": {
+    "@earendil-works/pi-tui": "^0.75.5",
     "@nchat/protocol": "workspace:*",
     "commander": "^14.0.3",
     "ws": "^8.20.1",

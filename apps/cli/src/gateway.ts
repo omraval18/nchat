@@ -37,6 +37,7 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
   private outboxTimer: NodeJS.Timeout | null = null;
   private pendingAcks = new Map<string, (status: MessageStatus, reason?: string) => void>();
   private stopped = true;
+  private reconnectTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly config: ClientConfig,
@@ -245,15 +246,40 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
 
   async start(): Promise<void> {
     this.stopped = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.store.resetSendingOutbox();
-    await this.refreshConnections();
-    await this.refreshGroups();
-    await this.connectWebSocket();
+
+    try {
+      await this.refreshConnections();
+    } catch (error) {
+      this.recordError(error);
+      this.emit("connections", this.store.listConnections());
+    }
+
+    try {
+      await this.refreshGroups();
+    } catch (error) {
+      this.recordError(error);
+      this.emit("groups", this.store.listGroups());
+    }
+
+    try {
+      await this.connectWebSocket();
+    } catch (error) {
+      this.recordError(error);
+      this.scheduleReconnect();
+    }
+
     this.outboxTimer = setInterval(() => void this.flushOutbox(), 2_000);
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     if (this.outboxTimer) clearInterval(this.outboxTimer);
     this.outboxTimer = null;
     this.ws?.close();
@@ -286,11 +312,22 @@ export class ClientGateway extends EventEmitter<GatewayEvents> {
       if (this.ws === ws) this.ws = null;
       this.setStatus({ websocket: "disconnected", activePeer: this.status.activePeer });
       if (!this.stopped) {
-        setTimeout(() => void this.connectWebSocket().catch((error) => this.recordError(error)), 2_000);
+        this.scheduleReconnect();
       }
     });
 
     ws.on("error", (error) => this.recordError(error));
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connectWebSocket().catch((error) => {
+        this.recordError(error);
+        this.scheduleReconnect();
+      });
+    }, 2_000);
   }
 
   private async flushOutbox(): Promise<void> {
